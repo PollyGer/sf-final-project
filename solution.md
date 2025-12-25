@@ -183,4 +183,117 @@ FROM open_tx
 
 - В среднем активный пользователь решает 9,18 задач и проходит 2,11 теста — основной сценарий использования платформы связан с задачами
 - На 1 задачу приходится 9,35 попыток, а на 1 тест — 1,26, значит задачи чаще требуют многократных итераций и именно вокруг них логично усиливать ценность подписки (например, решения, разборы, и тд).
-- Чаще открывают задачи и тесты (522 и 676 пользователей) и существенно реже — подсказки (53) и решения (151), поэтому в подписке наиболее понятной ценностью будут доступ/пакет к задачам и тестам, а подсказки и решения можно использовать как усиливающую фичу 
+- Чаще открывают задачи и тесты (522 и 676 пользователей) и существенно реже — подсказки (53) и решения (151), поэтому в подписке наиболее понятной ценностью будут доступ/пакет к задачам и тестам, а подсказки и решения можно использовать как усиливающую фичу
+
+# Дополнительное задание
+
+Мне кажется, для выбора сроков/цены/состава подписки не хватает метрик, которые описывают поведение пользователя  в первые 30 дней, а также отдельно — как быстро пользователь доходит до первой покупки.
+
+Для этого предлагаю посчитать 3 метрики:
+
+- **Coin spend 30D** — сколько коинов пользователи тратят в первые 30 дней после регистрации.
+- **30D Content Usage** — сколько задач и тестов пользователи проходят в первые 30 дней.
+- **Time to First Spend** — через сколько дней после регистрации пользователь впервые совершает списание.
+### Метрика 1: Coin spend 30D
+**Что считаем:** сумма списаний CodeCoins в первые 30 дней жизни пользователя (среднее и медиана среди тех, кто вообще тратил).  
+**Зачем:** метрика напрямую помогает прикинуть адекватную цену месячной подписки (в коинах, а затем и в рублях по курсу).
+
+```sql
+WITH reg AS (
+    SELECT id AS user_id, date_joined::date AS reg_dt
+    FROM users
+),
+spend30 AS (
+    SELECT
+        r.user_id,
+        SUM(ABS(t.value)) AS spend_30d
+    FROM reg r
+    JOIN "transaction" t
+      ON t.user_id = r.user_id
+     AND t.created_at::date >= r.reg_dt
+     AND t.created_at::date <  r.reg_dt + 30
+     AND t.type_id IN (1, 23, 24, 25, 26, 27, 28, 30)
+    GROUP BY r.user_id
+)
+SELECT
+    ROUND(AVG(spend_30d)::numeric, 2) AS avg_spend_first_30d_among_spenders,
+    percentile_cont(0.5) WITHIN GROUP (ORDER BY spend_30d) AS median_spend_first_30d_among_spenders
+FROM spend30
+```
+- Среднее списание за первые 30 дней среди тех, кто тратил: 53,76 коинов.
+- Медианное списание за первые 30 дней среди тех, кто тратил: 30 коинов
+
+### Метрика 2: 30D Content Usage
+
+**Что считаем:** сколько уникальных задач и тестов пользователь делает в первые 30 дней после регистрации.  
+**Pfxtv:** помогает сформировать состав подписки например, какие лимиты/пакеты доступа логичны для месячного тарифа
+
+```sql
+WITH reg AS (
+    SELECT id AS user_id, date_joined::date AS reg_dt
+    FROM users
+),
+task30 AS (
+    SELECT
+        r.user_id,
+        COUNT(DISTINCT cs.problem_id) AS tasks_30d
+    FROM reg r
+    JOIN codesubmit cs
+      ON cs.user_id = r.user_id
+     AND cs.created_at::date >= r.reg_dt
+     AND cs.created_at::date <  r.reg_dt + 30
+    GROUP BY r.user_id
+),
+test30 AS (
+    SELECT
+        r.user_id,
+        COUNT(DISTINCT ts.test_id) AS tests_30d
+    FROM reg r
+    JOIN teststart ts
+      ON ts.user_id = r.user_id
+     AND ts.created_at::date >= r.reg_dt
+     AND ts.created_at::date <  r.reg_dt + 30
+    GROUP BY r.user_id
+)
+SELECT
+    ROUND(AVG(t.tasks_30d)::numeric, 2) AS avg_tasks_first_30d_among_task_users,
+    ROUND(AVG(te.tests_30d)::numeric, 2) AS avg_tests_first_30d_among_test_users
+FROM task30 t
+FULL JOIN test30 te USING (user_id)
+```
+
+### Метрика 3: Time to First Spend
+
+**Что считаем:** через сколько дней после регистрации пользователь впервые совершает списание (среднее и медиана среди тех, кто хотя бы раз тратил).  
+**ЗАчем:** показывает, когда пользователь обычно готов к оплате, и помогает настроить момент показа оффера
+
+```sql
+WITH first_spend AS (
+    SELECT
+        u.id AS user_id,
+        u.date_joined::date AS reg_dt,
+        MIN(t.created_at::date) AS first_spend_dt
+    FROM users u
+    JOIN "transaction" t
+        ON t.user_id = u.id
+       AND t.type_id IN (1, 23, 24, 25, 26, 27, 28, 30)
+    GROUP BY u.id, u.date_joined::date
+),
+deltas AS (
+    SELECT
+        user_id,
+        (first_spend_dt - reg_dt) AS days_to_first_spend
+    FROM first_spend
+)
+SELECT
+    ROUND(AVG(days_to_first_spend)::numeric, 2) AS avg_days_to_first_spend,
+    percentile_cont(0.5) WITHIN GROUP (ORDER BY days_to_first_spend) AS median_days_to_first_spend
+FROM deltas
+```
+
+Выводы:
+
+- **Coin spend 30D:** в среднем пользователь, который тратит коины, списывает 53,76 коинов за первые 30 дней, при этом медиана 30 коинов, то есть типичный расход заметно ниже среднего и есть небольшая группа пользователей с повышенными тратами (мб для них можно безлимит предложить)
+- **30D Content Usage:** в первые 30 дней активный пользователь в среднем решает 7,37 задач и проходит 1,56 теста, что подтверждает, что основной пользовательский сценарий находится внутри месячного периода.
+- **Time to First Spend:** среднее время до первого списания — 3,74 дня, медиана — 0 дней, значит многие пользователи принимают решение о покупке сразу, и предлагать подписки можно показывать уже в первые дни после регистрации. 
+
