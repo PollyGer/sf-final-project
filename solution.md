@@ -297,3 +297,61 @@ FROM deltas
 - **30D Content Usage:** в первые 30 дней активный пользователь в среднем решает 7,37 задач и проходит 1,56 теста, что подтверждает, что основной пользовательский сценарий находится внутри месячного периода.
 - **Time to First Spend:** среднее время до первого списания — 3,74 дня, медиана — 0 дней, значит многие пользователи принимают решение о покупке сразу, и предлагать подписки можно показывать уже в первые дни после регистрации. 
 
+
+# Дополнительное задание2 
+```python
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+df = pd.read_csv("result_data/data.csv")
+df["event_ts"] = pd.to_datetime(df["event_ts"])
+
+dow_map = {0: "Вс", 1: "Пн", 2: "Вт", 3: "Ср", 4: "Чт", 5: "Пт", 6: "Сб"}
+dow_order = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+df["dow"] = df["dow_num"].map(dow_map)
+
+sns.set_style("whitegrid")
+
+def agg(d):
+    dow = d["dow"].value_counts().reindex(dow_order).fillna(0)
+    hour = d["hour_num"].value_counts().sort_index()
+    hour = hour.reindex(range(24)).fillna(0)
+    return dow, hour
+
+dow_all, hour_all = agg(df)
+df_core = df[df["event_type"].isin(["codesubmit", "teststart"])]
+dow_core, hour_core = agg(df_core)
+
+def bar(ax, x, y, title):
+    sns.barplot(x=x, y=y, ax=ax)
+    ax.set_title(title)
+    ax.set_xlabel("День недели")
+    ax.set_ylabel("Количество событий")
+
+def line(ax, x, y, title):
+    sns.lineplot(x=x, y=y, marker="o", ax=ax)
+    ax.set_title(title)
+    ax.set_xlabel("Час суток")
+    ax.set_ylabel("Количество событий")
+    ax.set_xticks(range(24))
+
+fig, ax = plt.subplots(2, 2, figsize=(14, 8))
+
+bar(ax[0, 0], dow_all.index,  dow_all.values,  "Активность по дням недели (все события)")
+line(ax[0, 1], hour_all.index, hour_all.values, "Активность по времени суток (все события)")
+bar(ax[1, 0], dow_core.index, dow_core.values, "Ключевые действия (проверка/тесты) по дням недели")
+line(ax[1, 1], hour_core.index, hour_core.values, "Ключевые действия (проверка/тесты) по времени суток")
+
+plt.tight_layout()
+plt.savefig("cto_dashboard.png", dpi=200, bbox_inches="tight")
+plt.show()
+
+```
+![cto_dashboard.png](cto_dashboard.png)
+
+**Выводы:**
+
+- Минимальная активность — в выходные (сб–вс), максимальная — в середине недели (ср–чт) 
+- Минимум по времени суток — ночью (примерно 01:00–04:00), пик  днём (примерно 12:00–14:00)
+- Релизы лучше проводить ночью (01:00–04:00), предпочтительно в выходные, чтобы затронуть минимум пользователей
+
